@@ -287,7 +287,7 @@ class YouTubeLatestVideoPlayer {
             $output .= '</div>';
         } else {
             // Show regular video player
-            $output .= '<div class="ylvp-video-wrapper">';
+            $output .= '<div class="ylvp-video-wrapper ylvp-custom-width">';
             $output .= '<iframe width="' . esc_attr($atts['width']) . '" height="' . esc_attr($atts['height']) . '" ';
             $output .= 'src="https://www.youtube.com/embed/' . esc_attr($video_id) . '?rel=0' . $autoplay . '" ';
             $output .= 'title="' . esc_attr($title) . '" ';

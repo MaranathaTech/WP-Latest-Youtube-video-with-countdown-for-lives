@@ -1,4 +1,4 @@
-/* YouTube Latest Video Player Styles */
+/* YouTube Latest Video Player Styles - Updated for centering v2.0 */
 
 .ylvp-container {
     margin: 20px 0;
@@ -7,6 +7,8 @@
     border-radius: 8px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .ylvp-video-wrapper {
@@ -15,6 +17,7 @@
     padding-bottom: 56.25%; /* 16:9 aspect ratio */
     height: 0;
     overflow: hidden;
+    flex: 1;
 }
 
 .ylvp-video-wrapper iframe {
@@ -295,22 +298,6 @@
     }
 }
 
-/* Custom width support for shortcode */
-.ylvp-container.ylvp-custom-width {
-    max-width: 100%;
-    width: auto;
-    display: inline-block;
-}
-
-.ylvp-container.ylvp-custom-width .ylvp-video-wrapper {
-    padding-bottom: 0;
-    height: auto;
-    position: static;
-}
-
-.ylvp-container.ylvp-custom-width .ylvp-video-wrapper iframe {
-    position: static;
-}
 
 /* Admin page styles */
 .ylvp-usage-info {
