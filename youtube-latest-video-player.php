@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.0.0
+ * Version: 1.0.6
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.0.0');
+define('YLVP_VERSION', '1.0.6');
 
 class YouTubeLatestVideoPlayer {
 
@@ -258,14 +258,13 @@ class YouTubeLatestVideoPlayer {
         $scheduled_start = $video_data['scheduled_start_time'];
         $autoplay = $atts['autoplay'] ? '&autoplay=1' : '';
 
-        $output = '<div class="ylvp-container' . ($is_upcoming ? ' ylvp-upcoming' : '') . ($is_live ? ' ylvp-live' : '') . '"';
-        if ($is_upcoming && $scheduled_start) {
-            $output .= ' data-scheduled-start="' . esc_attr($scheduled_start) . '"';
-        }
-        $output .= '>';
-
         if ($is_upcoming && !$is_live && get_option('ylvp_countdown_enabled', 1)) {
             // Show countdown for upcoming videos
+            $output = '<div class="ylvp-container ylvp-upcoming"';
+            if ($scheduled_start) {
+                $output .= ' data-scheduled-start="' . esc_attr($scheduled_start) . '"';
+            }
+            $output .= '>';
             $output .= '<div class="ylvp-countdown-wrapper">';
             $output .= '<div class="ylvp-upcoming-info">';
             $output .= '<h3 class="ylvp-upcoming-title">Upcoming Video</h3>';
@@ -285,24 +284,15 @@ class YouTubeLatestVideoPlayer {
             $output .= '<div class="ylvp-play-overlay">⏰</div>';
             $output .= '</div>';
             $output .= '</div>';
+            $output .= '</div>';
         } else {
-            // Show regular video player
-            $output .= '<div class="ylvp-video-wrapper ylvp-custom-width">';
-            $output .= '<iframe width="' . esc_attr($atts['width']) . '" height="' . esc_attr($atts['height']) . '" ';
+            // Show clean iframe only - no container styling
+            $output = '<iframe class="ylvp-clean-iframe" ';
             $output .= 'src="https://www.youtube.com/embed/' . esc_attr($video_id) . '?rel=0' . $autoplay . '" ';
             $output .= 'title="' . esc_attr($title) . '" ';
             $output .= 'frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" ';
             $output .= 'allowfullscreen></iframe>';
-            $output .= '</div>';
-            $output .= '<div class="ylvp-video-info">';
-            $output .= '<h3 class="ylvp-video-title">' . esc_html($title) . '</h3>';
-            if ($is_live) {
-                $output .= '<div class="ylvp-live-indicator">🔴 LIVE</div>';
-            }
-            $output .= '</div>';
         }
-
-        $output .= '</div>';
 
         // Add debug info even when successful if debug mode is enabled
         if ($atts['debug'] == 1 && current_user_can('manage_options')) {

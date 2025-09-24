@@ -1,7 +1,7 @@
 /* YouTube Latest Video Player Styles - Updated for centering v2.0 */
 
 .ylvp-container {
-    margin: 20px 0;
+    margin: 20px auto;
     padding: 0;
     background: #fff;
     border-radius: 8px;
@@ -9,24 +9,18 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-}
-
-.ylvp-video-wrapper {
     position: relative;
-    width: 100%;
-    padding-bottom: 56.25%; /* 16:9 aspect ratio */
-    height: 0;
-    overflow: hidden;
-    flex: 1;
+    max-width: 800px;
 }
 
-.ylvp-video-wrapper iframe {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    border: none;
+/* Clean iframe styling - no container */
+.ylvp-clean-iframe {
+    width: 100% !important;
+    max-width: 800px !important;
+    aspect-ratio: 16 / 9 !important;
+    border: none !important;
+    display: block !important;
+    margin: 0 auto !important;
 }
 
 .ylvp-video-info {
