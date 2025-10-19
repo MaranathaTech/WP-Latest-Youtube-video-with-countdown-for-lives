@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Read(//Users/ernielail/Desktop/**)",
-      "WebFetch(domain:lail-tech.com)"
+      "WebFetch(domain:lail-tech.com)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

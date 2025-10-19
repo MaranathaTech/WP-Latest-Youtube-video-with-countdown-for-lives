@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.0.6
+ * Version: 1.2.2
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.0.6');
+define('YLVP_VERSION', '1.2.2');
 
 class YouTubeLatestVideoPlayer {
 
@@ -27,6 +27,10 @@ class YouTubeLatestVideoPlayer {
         add_action('admin_init', array($this, 'admin_init'));
         add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
         add_shortcode('youtube_latest_video', array($this, 'shortcode_handler'));
+
+        // AJAX handlers for checking video status
+        add_action('wp_ajax_ylvp_check_video_status', array($this, 'ajax_check_video_status'));
+        add_action('wp_ajax_nopriv_ylvp_check_video_status', array($this, 'ajax_check_video_status'));
 
         // Activation and deactivation hooks
         register_activation_hook(__FILE__, array($this, 'activate'));
@@ -203,8 +207,32 @@ class YouTubeLatestVideoPlayer {
     }
 
     public function enqueue_scripts() {
-        wp_enqueue_style('ylvp-style', YLVP_PLUGIN_URL . 'assets/style.css', array(), YLVP_VERSION);
+        wp_enqueue_style('ylvp-style', YLVP_PLUGIN_URL . 'assets/style.css', array(), time()); // Force timestamp cache bust
         wp_enqueue_script('ylvp-script', YLVP_PLUGIN_URL . 'assets/script.js', array('jquery'), YLVP_VERSION, true);
+
+        // Localize script for AJAX
+        wp_localize_script('ylvp-script', 'ylvp_ajax', array(
+            'ajax_url' => admin_url('admin-ajax.php'),
+            'nonce' => wp_create_nonce('ylvp_check_video_status')
+        ));
+
+        // Add isolation CSS to prevent conflicts
+        wp_add_inline_style('ylvp-style', '
+            .ylvp-isolated-container iframe[src*="youtube.com"] {
+                position: absolute !important;
+                top: 0 !important;
+                left: 0 !important;
+                width: 100% !important;
+                height: 100% !important;
+                border: none !important;
+                z-index: 1001 !important;
+            }
+            .ylvp-isolated-container {
+                position: relative !important;
+                z-index: 1000 !important;
+                isolation: isolate !important;
+            }
+        ');
     }
 
     public function shortcode_handler($atts) {
@@ -286,12 +314,28 @@ class YouTubeLatestVideoPlayer {
             $output .= '</div>';
             $output .= '</div>';
         } else {
-            // Show clean iframe only - no container styling
-            $output = '<iframe class="ylvp-clean-iframe" ';
+            // Clean video player output
+            $output = '<div class="ylvp-container"';
+            // Add data attributes for status monitoring
+            if ($is_live) {
+                $output .= ' data-is-live="true" data-video-id="' . esc_attr($video_id) . '"';
+            }
+            $output .= '>';
+            $output .= '<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%; overflow: hidden;">';
+            $output .= '<iframe ';
             $output .= 'src="https://www.youtube.com/embed/' . esc_attr($video_id) . '?rel=0' . $autoplay . '" ';
             $output .= 'title="' . esc_attr($title) . '" ';
+            $output .= 'style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none;" ';
             $output .= 'frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" ';
             $output .= 'allowfullscreen></iframe>';
+            $output .= '</div>';
+            $output .= '<div class="ylvp-video-info">';
+            $output .= '<h3 class="ylvp-video-title">' . esc_html($title) . '</h3>';
+            if ($is_live) {
+                $output .= '<div class="ylvp-live-indicator">🔴 LIVE</div>';
+            }
+            $output .= '</div>';
+            $output .= '</div>';
         }
 
         // Add debug info even when successful if debug mode is enabled
@@ -699,6 +743,100 @@ class YouTubeLatestVideoPlayer {
         }
 
         return $debug_info;
+    }
+
+    /**
+     * AJAX handler to check video status and return HTML
+     */
+    public function ajax_check_video_status() {
+        // Verify nonce for security
+        check_ajax_referer('ylvp_check_video_status', 'nonce');
+
+        // Get current video ID if provided (to detect changes)
+        $current_video_id = isset($_POST['current_video_id']) ? sanitize_text_field($_POST['current_video_id']) : '';
+
+        // Clear cache to force fresh check
+        delete_transient('ylvp_video_data_upcoming');
+        delete_transient('ylvp_video_data_latest');
+
+        // Get fresh video data
+        $video_data = $this->get_video_data(true);
+
+        if (!$video_data) {
+            wp_send_json_error(array(
+                'message' => 'Unable to fetch video data'
+            ));
+            return;
+        }
+
+        $video_id = $video_data['video_id'];
+        $title = $video_data['title'];
+        $is_upcoming = $video_data['is_upcoming'];
+        $is_live = isset($video_data['is_live']) ? $video_data['is_live'] : false;
+
+        // Detect if video has changed (live stream ended, new video available)
+        $video_changed = !empty($current_video_id) && $current_video_id !== $video_id;
+
+        // If we have an upcoming video, return countdown
+        if ($is_upcoming && !$is_live) {
+            $scheduled_start = $video_data['scheduled_start_time'];
+
+            // Generate countdown HTML
+            $html = '<div class="ylvp-countdown-wrapper">';
+            $html .= '<div class="ylvp-upcoming-info">';
+            $html .= '<h3 class="ylvp-upcoming-title">Upcoming Video</h3>';
+            $html .= '<h4 class="ylvp-video-title">' . esc_html($title) . '</h4>';
+            $html .= '</div>';
+            $html .= '<div class="ylvp-countdown" data-target="' . esc_attr($scheduled_start) . '">';
+            $html .= '<div class="ylvp-countdown-display">';
+            $html .= '<div class="ylvp-time-unit"><span class="ylvp-days">00</span><label>Days</label></div>';
+            $html .= '<div class="ylvp-time-unit"><span class="ylvp-hours">00</span><label>Hours</label></div>';
+            $html .= '<div class="ylvp-time-unit"><span class="ylvp-minutes">00</span><label>Minutes</label></div>';
+            $html .= '<div class="ylvp-time-unit"><span class="ylvp-seconds">00</span><label>Seconds</label></div>';
+            $html .= '</div>';
+            $html .= '<div class="ylvp-countdown-message">Until stream starts</div>';
+            $html .= '</div>';
+            $html .= '<div class="ylvp-video-placeholder">';
+            $html .= '<img src="' . esc_url($video_data['thumbnail']) . '" alt="' . esc_attr($title) . '" class="ylvp-thumbnail" />';
+            $html .= '<div class="ylvp-play-overlay">⏰</div>';
+            $html .= '</div>';
+            $html .= '</div>';
+
+            wp_send_json_success(array(
+                'status' => 'upcoming',
+                'video_id' => $video_id,
+                'is_upcoming' => true,
+                'scheduled_start' => $scheduled_start,
+                'html' => $html,
+                'video_changed' => $video_changed
+            ));
+        } else {
+            // Live or completed video - generate video player HTML
+            $html = '<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%; overflow: hidden;">';
+            $html .= '<iframe ';
+            $html .= 'src="https://www.youtube.com/embed/' . esc_attr($video_id) . '?rel=0' . ($video_changed ? '' : '&autoplay=1') . '" ';
+            $html .= 'title="' . esc_attr($title) . '" ';
+            $html .= 'style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none;" ';
+            $html .= 'frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" ';
+            $html .= 'allowfullscreen></iframe>';
+            $html .= '</div>';
+            $html .= '<div class="ylvp-video-info">';
+            $html .= '<h3 class="ylvp-video-title">' . esc_html($title) . '</h3>';
+            if ($is_live) {
+                $html .= '<div class="ylvp-live-indicator">🔴 LIVE</div>';
+            }
+            $html .= '</div>';
+
+            wp_send_json_success(array(
+                'status' => $is_live ? 'live' : 'completed',
+                'video_id' => $video_id,
+                'is_live' => $is_live,
+                'is_upcoming' => false,
+                'html' => $html,
+                'title' => $title,
+                'video_changed' => $video_changed
+            ));
+        }
     }
 }
 

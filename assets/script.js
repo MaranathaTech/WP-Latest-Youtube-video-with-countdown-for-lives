@@ -10,6 +10,7 @@
         initializeVideoPlayers();
         setupRefreshButton();
         initializeCountdowns();
+        initializeStatusMonitoring();
     });
 
     /**
@@ -252,31 +253,92 @@
         var $container = $countdown.closest('.ylvp-container');
 
         $countdown.find('.ylvp-countdown-display').html('<div class="ylvp-countdown-complete">Stream is starting!</div>');
-        $countdown.find('.ylvp-countdown-message').text('Refresh to watch live');
+        $countdown.find('.ylvp-countdown-message').text('Checking for live stream...');
 
-        // Add refresh button
-        if (!$container.find('.ylvp-refresh-btn').length) {
-            var $refreshBtn = $('<button class="ylvp-refresh-btn ylvp-auto-refresh" title="Refresh to watch live">🔄 Watch Live</button>');
-            $refreshBtn.on('click', function(e) {
-                e.preventDefault();
-                location.reload();
-            });
-            $countdown.append($refreshBtn);
+        // Check video status immediately
+        checkVideoStatus($container);
+
+        // Continue checking every 15 seconds
+        var checkInterval = setInterval(function() {
+            if ($container.is(':visible') && $container.hasClass('ylvp-upcoming')) {
+                checkVideoStatus($container);
+            } else {
+                // Stop checking if video is now live
+                clearInterval(checkInterval);
+            }
+        }, 15000);
+    }
+
+    /**
+     * Check video status via AJAX and update display
+     */
+    function checkVideoStatus($container) {
+        if (typeof ylvp_ajax === 'undefined') {
+            console.log('AJAX not configured, falling back to page reload');
+            location.reload();
+            return;
         }
 
-        // Auto-refresh after 10 seconds, then every 30 seconds
-        setTimeout(function() {
-            if ($container.is(':visible')) {
-                location.reload();
-            }
-        }, 10000);
+        $.ajax({
+            url: ylvp_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'ylvp_check_video_status',
+                nonce: ylvp_ajax.nonce
+            },
+            success: function(response) {
+                if (response.success && (response.data.status === 'live' || response.data.status === 'completed')) {
+                    // Video is now live or ready! Replace the countdown with the video player
 
-        // Continue checking every 30 seconds
-        setInterval(function() {
-            if ($container.is(':visible') && $container.find('.ylvp-countdown-complete').length > 0) {
-                location.reload();
+                    // Set data attributes before replacing
+                    if (response.data.is_live) {
+                        $container.attr('data-is-live', 'true');
+                        $container.attr('data-video-id', response.data.video_id);
+                    } else {
+                        $container.attr('data-video-id', response.data.video_id);
+                    }
+
+                    replaceCountdownWithVideo($container, response.data.html);
+                } else if (response.success && response.data.status === 'upcoming') {
+                    // Still upcoming, update message
+                    $container.find('.ylvp-countdown-message').text('Stream starting soon... checking again');
+                } else {
+                    console.log('Error checking video status:', response);
+                }
+            },
+            error: function(xhr, status, error) {
+                console.log('Network error checking video status:', error);
+                // On error, fall back to page reload after a delay
+                setTimeout(function() {
+                    location.reload();
+                }, 5000);
             }
-        }, 30000);
+        });
+    }
+
+    /**
+     * Replace countdown with video player
+     */
+    function replaceCountdownWithVideo($container, videoHtml) {
+        // Remove the upcoming class
+        $container.removeClass('ylvp-upcoming');
+
+        // Replace the countdown wrapper with the video player
+        $container.find('.ylvp-countdown-wrapper').fadeOut(400, function() {
+            $(this).remove();
+            $container.html(videoHtml);
+
+            // Initialize the new video player
+            initializeVideoPlayers();
+
+            // Start monitoring if this is a live stream
+            if ($container.attr('data-is-live') === 'true') {
+                startLiveStreamMonitoring($container);
+            }
+
+            // Fade in the video
+            $container.find('iframe').hide().fadeIn(600);
+        });
     }
 
     /**
@@ -316,5 +378,144 @@
 
     // Enhance accessibility
     enhanceAccessibility();
+
+    /**
+     * Initialize status monitoring for live/completed videos
+     */
+    function initializeStatusMonitoring() {
+        // Monitor live streams to detect when they end
+        $('.ylvp-container[data-is-live="true"]').each(function() {
+            var $container = $(this);
+            startLiveStreamMonitoring($container);
+        });
+
+        // Monitor completed videos to check for upcoming sermons
+        $('.ylvp-container').not('[data-is-live="true"]').not('.ylvp-upcoming').each(function() {
+            var $container = $(this);
+            startCompletedVideoMonitoring($container);
+        });
+    }
+
+    /**
+     * Monitor a live stream to detect when it ends
+     */
+    function startLiveStreamMonitoring($container) {
+        var videoId = $container.data('video-id');
+
+        // Check every 2 minutes while live
+        var monitorInterval = setInterval(function() {
+            if (!$container.is(':visible')) {
+                clearInterval(monitorInterval);
+                return;
+            }
+
+            checkVideoStatusUpdate($container, videoId, function(response) {
+                if (response.data.status === 'completed') {
+                    // Stream ended, update to replay
+                    console.log('Live stream ended, showing replay');
+                    updateVideoDisplay($container, response.data);
+                    clearInterval(monitorInterval);
+
+                    // Start monitoring for next upcoming sermon
+                    startCompletedVideoMonitoring($container);
+                } else if (response.data.status === 'upcoming' && response.data.video_changed) {
+                    // New upcoming sermon scheduled
+                    console.log('New upcoming sermon detected');
+                    updateVideoDisplay($container, response.data);
+                    clearInterval(monitorInterval);
+                }
+            });
+        }, 120000); // Check every 2 minutes
+    }
+
+    /**
+     * Monitor a completed video to check for new upcoming sermons
+     */
+    function startCompletedVideoMonitoring($container) {
+        // Check every 5 minutes for new upcoming sermons
+        var monitorInterval = setInterval(function() {
+            if (!$container.is(':visible')) {
+                clearInterval(monitorInterval);
+                return;
+            }
+
+            var currentVideoId = $container.data('video-id') || '';
+
+            checkVideoStatusUpdate($container, currentVideoId, function(response) {
+                if (response.data.status === 'upcoming' && response.data.video_changed) {
+                    // New upcoming sermon scheduled
+                    console.log('New upcoming sermon detected while showing replay');
+                    updateVideoDisplay($container, response.data);
+                    clearInterval(monitorInterval);
+                }
+            });
+        }, 300000); // Check every 5 minutes
+    }
+
+    /**
+     * Check video status update via AJAX
+     */
+    function checkVideoStatusUpdate($container, currentVideoId, callback) {
+        if (typeof ylvp_ajax === 'undefined') {
+            return;
+        }
+
+        $.ajax({
+            url: ylvp_ajax.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'ylvp_check_video_status',
+                nonce: ylvp_ajax.nonce,
+                current_video_id: currentVideoId
+            },
+            success: function(response) {
+                if (response.success && callback) {
+                    callback(response);
+                }
+            },
+            error: function(xhr, status, error) {
+                console.log('Error checking video status:', error);
+            }
+        });
+    }
+
+    /**
+     * Update video display based on new status
+     */
+    function updateVideoDisplay($container, data) {
+        if (data.status === 'upcoming') {
+            // Switch to countdown mode
+            $container.addClass('ylvp-upcoming');
+            $container.removeAttr('data-is-live');
+            $container.removeAttr('data-video-id');
+
+            $container.fadeOut(300, function() {
+                $container.html(data.html);
+                $container.fadeIn(300, function() {
+                    // Reinitialize countdowns
+                    initializeCountdowns();
+                });
+            });
+        } else if (data.status === 'completed' || data.status === 'live') {
+            // Update to video player (replay or live)
+            $container.removeClass('ylvp-upcoming');
+
+            if (data.is_live) {
+                $container.attr('data-is-live', 'true');
+                $container.attr('data-video-id', data.video_id);
+            } else {
+                $container.removeAttr('data-is-live');
+                $container.attr('data-video-id', data.video_id);
+            }
+
+            $container.fadeOut(300, function() {
+                $container.html(data.html);
+                $container.fadeIn(300, function() {
+                    // Reinitialize video players
+                    initializeVideoPlayers();
+                });
+            });
+        }
+    }
 
 })(jQuery);
