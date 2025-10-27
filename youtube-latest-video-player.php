@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.3.2
+ * Version: 1.3.3
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.3.2');
+define('YLVP_VERSION', '1.3.3');
 
 class YouTubeLatestVideoPlayer {
 
@@ -303,8 +303,18 @@ class YouTubeLatestVideoPlayer {
             'autoplay' => 0,
             'show_upcoming' => get_option('ylvp_show_upcoming', 1),
             'debug' => 0,
-            'refresh' => 0
+            'refresh' => 0,
+            'clear_locks' => 0
         ), $atts);
+
+        // Clear locks if requested (for debugging stuck locks)
+        if ($atts['clear_locks'] == 1) {
+            delete_transient('ylvp_video_data_upcoming_lock');
+            delete_transient('ylvp_video_data_latest_lock');
+            $debug_messages = get_option('ylvp_debug_messages', array());
+            $debug_messages[] = "MANUALLY CLEARED ALL LOCKS via shortcode parameter";
+            update_option('ylvp_debug_messages', $debug_messages);
+        }
 
         // Force cache refresh if requested
         if ($atts['refresh'] == 1) {
@@ -320,10 +330,10 @@ class YouTubeLatestVideoPlayer {
         if (!$video_data) {
             $error_message = 'Unable to load video. Please check your settings.';
 
-            // Show debug info if debug mode is enabled
-            if ($atts['debug'] == 1 && current_user_can('manage_options')) {
-                $error_message .= '<div class="ylvp-debug-info" style="background: #f1f1f1; padding: 10px; margin-top: 10px; font-size: 12px; font-family: monospace; max-height: 400px; overflow-y: auto;">';
-                $error_message .= '<strong>Debug Information:</strong><br>';
+            // Show debug info if debug mode is enabled (removed admin check for troubleshooting)
+            if ($atts['debug'] == 1) {
+                $error_message .= '<div class="ylvp-debug-info" style="background: #f1f1f1; padding: 10px; margin-top: 10px; font-size: 12px; font-family: monospace; max-height: 400px; overflow-y: auto; border: 2px solid #dc3232;">';
+                $error_message .= '<strong>Debug Information (ERROR STATE):</strong><br>';
                 foreach ($debug_info as $key => $value) {
                     if ($key === 'API Debug Messages') {
                         // Show detailed API messages
@@ -465,17 +475,26 @@ class YouTubeLatestVideoPlayer {
 
         // RACE CONDITION PROTECTION: Check if another process is already fetching
         // If locked, wait briefly and return cached data (even if stale)
-        if (get_transient($lock_key)) {
+        $lock_status = get_transient($lock_key);
+        if ($lock_status) {
+            $debug_messages = get_option('ylvp_debug_messages', array());
+            $debug_messages[] = "LOCK DETECTED - another process is fetching. Waiting 500ms...";
+            update_option('ylvp_debug_messages', $debug_messages);
+
             // Another request is already fetching, wait a moment
             usleep(500000); // Wait 500ms
 
             // Check cache again - the other process may have completed
             $cached_video = get_transient($cache_key);
             if ($cached_video !== false) {
+                $debug_messages[] = "Lock wait successful - found cached data";
+                update_option('ylvp_debug_messages', $debug_messages);
                 return $cached_video;
             }
 
             // If still no cache, return false rather than making duplicate API call
+            $debug_messages[] = "Lock wait failed - no cached data available, returning false";
+            update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
 
