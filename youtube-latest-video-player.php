@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.3.3
+ * Version: 1.4.0
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.3.3');
+define('YLVP_VERSION', '1.4.0');
 
 class YouTubeLatestVideoPlayer {
 
@@ -187,6 +187,9 @@ class YouTubeLatestVideoPlayer {
         delete_transient('ylvp_video_data_upcoming_lock');
         delete_transient('ylvp_video_data_latest_lock');
 
+        // Clear API error state
+        delete_transient('ylvp_api_error_state');
+
         // Clear all channel ID caches (they use md5 hash)
         global $wpdb;
         $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_ylvp_channel_id_%'");
@@ -322,6 +325,7 @@ class YouTubeLatestVideoPlayer {
             delete_transient('ylvp_video_data_latest');
             delete_transient('ylvp_video_data_upcoming_lock');
             delete_transient('ylvp_video_data_latest_lock');
+            delete_transient('ylvp_api_error_state'); // Clear error state on manual refresh
         }
 
         $video_data = $this->get_video_data($atts['show_upcoming']);
@@ -715,8 +719,51 @@ class YouTubeLatestVideoPlayer {
         return true;
     }
 
+    private function check_api_error_state() {
+        // Check if we're in an error state (to prevent quota burn)
+        $error_state = get_transient('ylvp_api_error_state');
+        return $error_state !== false;
+    }
+
+    private function set_api_error_state($error_message, $duration = 3600) {
+        // Set error state for 1 hour by default
+        set_transient('ylvp_api_error_state', $error_message, $duration);
+        $debug_messages = get_option('ylvp_debug_messages', array());
+        $debug_messages[] = "API ERROR STATE ACTIVATED: " . $error_message . " (will retry in " . ($duration / 60) . " minutes)";
+        update_option('ylvp_debug_messages', $debug_messages);
+    }
+
+    private function check_api_response_for_errors($data, $debug_messages) {
+        if (isset($data['error'])) {
+            $error_code = $data['error']['code'] ?? 'unknown';
+            $error_message = $data['error']['message'] ?? 'Unknown error';
+
+            // Check for critical errors that should stop further attempts
+            if ($error_code == 403) {
+                if (strpos($error_message, 'referer') !== false) {
+                    // Referrer restriction error - stop for 1 hour
+                    $this->set_api_error_state("API Key referrer restriction - check Google Cloud Console", 3600);
+                    return true;
+                } elseif (strpos($error_message, 'quota') !== false) {
+                    // Quota exceeded - stop until midnight PT (worst case 24 hours)
+                    $this->set_api_error_state("Daily quota exceeded - resets at midnight Pacific", 86400);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private function fetch_upcoming_video_from_api($channel_id, $api_key) {
         $debug_messages = get_option('ylvp_debug_messages', array());
+
+        // FAILSAFE: Check if we're in API error state
+        if ($this->check_api_error_state()) {
+            $error_state = get_transient('ylvp_api_error_state');
+            $debug_messages[] = "FAILSAFE: Skipping API call due to error state: " . $error_state;
+            update_option('ylvp_debug_messages', $debug_messages);
+            return false;
+        }
 
         // Check rate limit before making API call
         if (!$this->check_rate_limit()) {
@@ -744,6 +791,11 @@ class YouTubeLatestVideoPlayer {
 
             $debug_messages[] = "Live stream search response: " . substr($body, 0, 200);
             update_option('ylvp_debug_messages', $debug_messages);
+
+            // FAILSAFE: Check for API errors
+            if ($this->check_api_response_for_errors($data, $debug_messages)) {
+                return false;
+            }
 
             if (isset($data['items'][0])) {
                 $video = $data['items'][0];
@@ -780,6 +832,11 @@ class YouTubeLatestVideoPlayer {
 
         $debug_messages[] = "Upcoming search response: " . substr($body, 0, 200);
         update_option('ylvp_debug_messages', $debug_messages);
+
+        // FAILSAFE: Check for API errors
+        if ($this->check_api_response_for_errors($data, $debug_messages)) {
+            return false;
+        }
 
         if (isset($data['items'][0])) {
             $video = $data['items'][0];
@@ -826,6 +883,14 @@ class YouTubeLatestVideoPlayer {
     private function fetch_latest_video_from_api($channel_id, $api_key) {
         $debug_messages = get_option('ylvp_debug_messages', array());
 
+        // FAILSAFE: Check if we're in API error state
+        if ($this->check_api_error_state()) {
+            $error_state = get_transient('ylvp_api_error_state');
+            $debug_messages[] = "FAILSAFE: Skipping API call due to error state: " . $error_state;
+            update_option('ylvp_debug_messages', $debug_messages);
+            return false;
+        }
+
         // Check rate limit
         if (!$this->check_rate_limit()) {
             $debug_messages[] = "Rate limit exceeded for latest video search";
@@ -851,6 +916,11 @@ class YouTubeLatestVideoPlayer {
 
             $debug_messages[] = "Completed stream search response: " . substr($body, 0, 200);
             update_option('ylvp_debug_messages', $debug_messages);
+
+            // FAILSAFE: Check for API errors
+            if ($this->check_api_response_for_errors($data, $debug_messages)) {
+                return false;
+            }
 
             if (isset($data['items'][0])) {
                 $video = $data['items'][0];
@@ -887,6 +957,11 @@ class YouTubeLatestVideoPlayer {
 
         $debug_messages[] = "Latest video search response: " . substr($body, 0, 200);
         update_option('ylvp_debug_messages', $debug_messages);
+
+        // FAILSAFE: Check for API errors
+        if ($this->check_api_response_for_errors($data, $debug_messages)) {
+            return false;
+        }
 
         if (isset($data['items']) && !empty($data['items'])) {
             // Get the most recent video that's not a short (check max 2 videos)
@@ -948,6 +1023,12 @@ class YouTubeLatestVideoPlayer {
             'Show Upcoming' => get_option('ylvp_show_upcoming', 1) ? 'Yes' : 'No',
             'Countdown Enabled' => get_option('ylvp_countdown_enabled', 1) ? 'Yes' : 'No'
         );
+
+        // Check API error state
+        $error_state = get_transient('ylvp_api_error_state');
+        if ($error_state !== false) {
+            $debug_info['⚠️ FAILSAFE ACTIVE'] = $error_state . ' - Use refresh=1 to retry';
+        }
 
         if (!empty($channel_url)) {
             $channel_id = $this->extract_channel_id($channel_url);
