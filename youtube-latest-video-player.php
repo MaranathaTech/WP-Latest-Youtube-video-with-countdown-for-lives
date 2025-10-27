@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.3.1
+ * Version: 1.3.2
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.3.1');
+define('YLVP_VERSION', '1.3.2');
 
 class YouTubeLatestVideoPlayer {
 
@@ -697,8 +697,12 @@ class YouTubeLatestVideoPlayer {
     }
 
     private function fetch_upcoming_video_from_api($channel_id, $api_key) {
+        $debug_messages = get_option('ylvp_debug_messages', array());
+
         // Check rate limit before making API call
         if (!$this->check_rate_limit()) {
+            $debug_messages[] = "Rate limit exceeded - returning cached data or failing";
+            update_option('ylvp_debug_messages', $debug_messages);
             // Return cached data if available, even if expired
             $cache_key = 'ylvp_video_data_upcoming';
             $cached = get_transient($cache_key);
@@ -711,12 +715,16 @@ class YouTubeLatestVideoPlayer {
         // First check for currently live streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=live&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
+        $debug_messages[] = "Searching for live streams: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (!is_wp_error($response)) {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
+
+            $debug_messages[] = "Live stream search response: " . substr($body, 0, 200);
+            update_option('ylvp_debug_messages', $debug_messages);
 
             if (isset($data['items'][0])) {
                 $video = $data['items'][0];
@@ -738,15 +746,21 @@ class YouTubeLatestVideoPlayer {
         // If no live stream, check for upcoming streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=upcoming&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
+        $debug_messages[] = "No live streams found, searching for upcoming: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
+            $debug_messages[] = "Upcoming search error: " . $response->get_error_message();
+            update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
 
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
+
+        $debug_messages[] = "Upcoming search response: " . substr($body, 0, 200);
+        update_option('ylvp_debug_messages', $debug_messages);
 
         if (isset($data['items'][0])) {
             $video = $data['items'][0];
@@ -769,6 +783,8 @@ class YouTubeLatestVideoPlayer {
             }
         }
 
+        $debug_messages[] = "No upcoming videos found";
+        update_option('ylvp_debug_messages', $debug_messages);
         return false;
     }
 
@@ -789,8 +805,12 @@ class YouTubeLatestVideoPlayer {
     }
 
     private function fetch_latest_video_from_api($channel_id, $api_key) {
+        $debug_messages = get_option('ylvp_debug_messages', array());
+
         // Check rate limit
         if (!$this->check_rate_limit()) {
+            $debug_messages[] = "Rate limit exceeded for latest video search";
+            update_option('ylvp_debug_messages', $debug_messages);
             $cache_key = 'ylvp_video_data_latest';
             $cached = get_transient($cache_key);
             if ($cached !== false) {
@@ -802,6 +822,7 @@ class YouTubeLatestVideoPlayer {
         // First check for recently completed live streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=completed&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
+        $debug_messages[] = "Searching for completed streams: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
@@ -809,8 +830,13 @@ class YouTubeLatestVideoPlayer {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
 
+            $debug_messages[] = "Completed stream search response: " . substr($body, 0, 200);
+            update_option('ylvp_debug_messages', $debug_messages);
+
             if (isset($data['items'][0])) {
                 $video = $data['items'][0];
+                $debug_messages[] = "Found completed stream: " . $video['snippet']['title'];
+                update_option('ylvp_debug_messages', $debug_messages);
                 return array(
                     'video_id' => $video['id']['videoId'],
                     'title' => $video['snippet']['title'],
@@ -827,15 +853,21 @@ class YouTubeLatestVideoPlayer {
         // Fallback to regular latest video search (reduced to 2 videos to save quota)
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&order=date&type=video&maxResults=2&key=" . urlencode($api_key);
 
+        $debug_messages[] = "No completed streams, searching for any recent videos: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
+            $debug_messages[] = "Latest video search error: " . $response->get_error_message();
+            update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
 
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
+
+        $debug_messages[] = "Latest video search response: " . substr($body, 0, 200);
+        update_option('ylvp_debug_messages', $debug_messages);
 
         if (isset($data['items']) && !empty($data['items'])) {
             // Get the most recent video that's not a short (check max 2 videos)
@@ -881,6 +913,8 @@ class YouTubeLatestVideoPlayer {
             );
         }
 
+        $debug_messages[] = "No videos found on channel";
+        update_option('ylvp_debug_messages', $debug_messages);
         return false;
     }
 
