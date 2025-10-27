@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.3.0');
+define('YLVP_VERSION', '1.3.1');
 
 class YouTubeLatestVideoPlayer {
 
@@ -184,6 +184,8 @@ class YouTubeLatestVideoPlayer {
         // Clear video data caches
         delete_transient('ylvp_video_data_upcoming');
         delete_transient('ylvp_video_data_latest');
+        delete_transient('ylvp_video_data_upcoming_lock');
+        delete_transient('ylvp_video_data_latest_lock');
 
         // Clear all channel ID caches (they use md5 hash)
         global $wpdb;
@@ -308,6 +310,8 @@ class YouTubeLatestVideoPlayer {
         if ($atts['refresh'] == 1) {
             delete_transient('ylvp_video_data_upcoming');
             delete_transient('ylvp_video_data_latest');
+            delete_transient('ylvp_video_data_upcoming_lock');
+            delete_transient('ylvp_video_data_latest_lock');
         }
 
         $video_data = $this->get_video_data($atts['show_upcoming']);
@@ -428,6 +432,7 @@ class YouTubeLatestVideoPlayer {
     private function get_video_data($show_upcoming = true) {
         // Check cache first, but use shorter cache for live events
         $cache_key = $show_upcoming ? 'ylvp_video_data_upcoming' : 'ylvp_video_data_latest';
+        $lock_key = $cache_key . '_lock';
         $cached_video = get_transient($cache_key);
 
         // If we have cached data, check if it's a live stream or upcoming event
@@ -458,10 +463,31 @@ class YouTubeLatestVideoPlayer {
             }
         }
 
+        // RACE CONDITION PROTECTION: Check if another process is already fetching
+        // If locked, wait briefly and return cached data (even if stale)
+        if (get_transient($lock_key)) {
+            // Another request is already fetching, wait a moment
+            usleep(500000); // Wait 500ms
+
+            // Check cache again - the other process may have completed
+            $cached_video = get_transient($cache_key);
+            if ($cached_video !== false) {
+                return $cached_video;
+            }
+
+            // If still no cache, return false rather than making duplicate API call
+            return false;
+        }
+
+        // Set lock to prevent other processes from making concurrent API calls
+        // Lock expires after 10 seconds (in case this process crashes)
+        set_transient($lock_key, true, 10);
+
         $channel_url = get_option('ylvp_youtube_channel_url');
         $api_key = get_option('ylvp_api_key');
 
         if (empty($channel_url) || empty($api_key)) {
+            delete_transient($lock_key); // Release lock
             return false;
         }
 
@@ -469,6 +495,7 @@ class YouTubeLatestVideoPlayer {
         $channel_id = $this->extract_channel_id($channel_url);
 
         if (!$channel_id) {
+            delete_transient($lock_key); // Release lock
             return false;
         }
 
@@ -522,6 +549,9 @@ class YouTubeLatestVideoPlayer {
 
             set_transient($cache_key, $video_data, $cache_duration);
         }
+
+        // Release lock now that we've completed the API call and caching
+        delete_transient($lock_key);
 
         return $video_data;
     }
@@ -880,6 +910,8 @@ class YouTubeLatestVideoPlayer {
             if (!$channel_id) {
                 delete_transient('ylvp_video_data_upcoming');
                 delete_transient('ylvp_video_data_latest');
+                delete_transient('ylvp_video_data_upcoming_lock');
+                delete_transient('ylvp_video_data_latest_lock');
                 $debug_info['Cache Status'] = 'CLEARED DUE TO EXTRACTION FAILURE';
             }
         }
@@ -903,6 +935,8 @@ class YouTubeLatestVideoPlayer {
         if ($force_refresh) {
             delete_transient('ylvp_video_data_upcoming');
             delete_transient('ylvp_video_data_latest');
+            delete_transient('ylvp_video_data_upcoming_lock');
+            delete_transient('ylvp_video_data_latest_lock');
         }
 
         // Get video data (will use cache if available and valid)
