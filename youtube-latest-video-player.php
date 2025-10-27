@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.2.2
+ * Version: 1.3.0
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.2.2');
+define('YLVP_VERSION', '1.3.0');
 
 class YouTubeLatestVideoPlayer {
 
@@ -66,8 +66,8 @@ class YouTubeLatestVideoPlayer {
     }
 
     public function admin_init() {
-        register_setting('ylvp_settings', 'ylvp_youtube_channel_url');
-        register_setting('ylvp_settings', 'ylvp_api_key');
+        register_setting('ylvp_settings', 'ylvp_youtube_channel_url', array($this, 'sanitize_channel_url'));
+        register_setting('ylvp_settings', 'ylvp_api_key', array($this, 'sanitize_api_key'));
         register_setting('ylvp_settings', 'ylvp_cache_duration');
         register_setting('ylvp_settings', 'ylvp_show_upcoming');
         register_setting('ylvp_settings', 'ylvp_countdown_enabled');
@@ -162,6 +162,35 @@ class YouTubeLatestVideoPlayer {
         echo '<p class="description">Enable countdown timer for upcoming videos</p>';
     }
 
+    public function sanitize_channel_url($value) {
+        // Clear channel ID cache when URL is changed
+        $old_value = get_option('ylvp_youtube_channel_url');
+        if ($old_value !== $value) {
+            $this->clear_all_caches();
+        }
+        return sanitize_url($value);
+    }
+
+    public function sanitize_api_key($value) {
+        // Clear all caches when API key is changed
+        $old_value = get_option('ylvp_api_key');
+        if ($old_value !== $value) {
+            $this->clear_all_caches();
+        }
+        return sanitize_text_field($value);
+    }
+
+    private function clear_all_caches() {
+        // Clear video data caches
+        delete_transient('ylvp_video_data_upcoming');
+        delete_transient('ylvp_video_data_latest');
+
+        // Clear all channel ID caches (they use md5 hash)
+        global $wpdb;
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_ylvp_channel_id_%'");
+        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '_transient_timeout_ylvp_channel_id_%'");
+    }
+
     public function admin_page() {
         ?>
         <div class="wrap">
@@ -188,10 +217,33 @@ class YouTubeLatestVideoPlayer {
 
                 <p><strong>Example:</strong> <code>[youtube_latest_video width="800" height="450" autoplay="1"]</code></p>
             </div>
+
+            <div class="ylvp-quota-info">
+                <h3>API Quota Usage (Last 7 Days)</h3>
+                <?php
+                $quota_usage = get_option('ylvp_quota_usage', array());
+                if (empty($quota_usage)) {
+                    echo '<p>No API calls tracked yet.</p>';
+                } else {
+                    echo '<table class="widefat">';
+                    echo '<thead><tr><th>Date</th><th>Quota Units Used</th></tr></thead>';
+                    echo '<tbody>';
+                    krsort($quota_usage); // Most recent first
+                    $total = 0;
+                    foreach ($quota_usage as $date => $usage) {
+                        echo '<tr><td>' . esc_html($date) . '</td><td>' . esc_html(number_format($usage)) . '</td></tr>';
+                        $total += $usage;
+                    }
+                    echo '<tr style="font-weight: bold;"><td>Total</td><td>' . esc_html(number_format($total)) . '</td></tr>';
+                    echo '</tbody></table>';
+                    echo '<p class="description" style="margin-top: 10px;">YouTube Data API v3 has a default quota of 10,000 units per day. Search requests cost 100 units each.</p>';
+                }
+                ?>
+            </div>
         </div>
 
         <style>
-        .ylvp-usage-info {
+        .ylvp-usage-info, .ylvp-quota-info {
             background: #f1f1f1;
             padding: 20px;
             margin-top: 20px;
@@ -201,6 +253,13 @@ class YouTubeLatestVideoPlayer {
             background: #fff;
             padding: 2px 6px;
             border-radius: 3px;
+        }
+        .ylvp-quota-info {
+            border-left-color: #d63638;
+        }
+        .ylvp-quota-info table {
+            margin-top: 10px;
+            background: #fff;
         }
         </style>
         <?php
@@ -482,6 +541,14 @@ class YouTubeLatestVideoPlayer {
     }
 
     private function get_channel_id_from_handle($handle) {
+        // Check cache first - channel IDs don't change
+        $cache_key = 'ylvp_channel_id_' . md5($handle);
+        $cached_channel_id = get_transient($cache_key);
+
+        if ($cached_channel_id !== false) {
+            return $cached_channel_id;
+        }
+
         $api_key = get_option('ylvp_api_key');
         $debug_messages = array();
 
@@ -499,8 +566,11 @@ class YouTubeLatestVideoPlayer {
             $debug_messages[] = "forHandle response: " . substr($body, 0, 200);
 
             if (isset($data['items'][0]['id'])) {
+                $channel_id = $data['items'][0]['id'];
+                // Cache for 7 days - will be cleared if settings change
+                set_transient($cache_key, $channel_id, 7 * DAY_IN_SECONDS);
                 $this->store_debug_messages($debug_messages);
-                return $data['items'][0]['id'];
+                return $channel_id;
             }
         }
 
@@ -518,8 +588,11 @@ class YouTubeLatestVideoPlayer {
             $debug_messages[] = "forUsername response: " . substr($body, 0, 200);
 
             if (isset($data['items'][0]['id'])) {
+                $channel_id = $data['items'][0]['id'];
+                // Cache for 7 days - will be cleared if settings change
+                set_transient($cache_key, $channel_id, 7 * DAY_IN_SECONDS);
                 $this->store_debug_messages($debug_messages);
-                return $data['items'][0]['id'];
+                return $channel_id;
             }
         }
 
@@ -537,8 +610,11 @@ class YouTubeLatestVideoPlayer {
             $debug_messages[] = "Search response: " . substr($body, 0, 200);
 
             if (isset($data['items'][0]['snippet']['channelId'])) {
+                $channel_id = $data['items'][0]['snippet']['channelId'];
+                // Cache for 7 days - will be cleared if settings change
+                set_transient($cache_key, $channel_id, 7 * DAY_IN_SECONDS);
                 $this->store_debug_messages($debug_messages);
-                return $data['items'][0]['snippet']['channelId'];
+                return $channel_id;
             }
         }
 
@@ -550,10 +626,62 @@ class YouTubeLatestVideoPlayer {
         update_option('ylvp_debug_messages', $messages);
     }
 
+    private function track_api_call($cost = 100) {
+        // Track API calls (default cost is 100 quota units per search call)
+        $today = date('Y-m-d');
+        $quota_usage = get_option('ylvp_quota_usage', array());
+
+        if (!isset($quota_usage[$today])) {
+            $quota_usage[$today] = 0;
+        }
+
+        $quota_usage[$today] += $cost;
+
+        // Keep only last 7 days of data
+        $cutoff_date = date('Y-m-d', strtotime('-7 days'));
+        foreach ($quota_usage as $date => $usage) {
+            if ($date < $cutoff_date) {
+                unset($quota_usage[$date]);
+            }
+        }
+
+        update_option('ylvp_quota_usage', $quota_usage);
+    }
+
+    private function check_rate_limit() {
+        // Rate limit: max 10 API calls per minute
+        $rate_limit_key = 'ylvp_rate_limit_' . floor(time() / 60);
+        $call_count = get_transient($rate_limit_key);
+
+        if ($call_count === false) {
+            set_transient($rate_limit_key, 1, 60);
+            return true;
+        }
+
+        if ($call_count >= 10) {
+            return false; // Rate limit exceeded
+        }
+
+        set_transient($rate_limit_key, $call_count + 1, 60);
+        return true;
+    }
+
     private function fetch_upcoming_video_from_api($channel_id, $api_key) {
+        // Check rate limit before making API call
+        if (!$this->check_rate_limit()) {
+            // Return cached data if available, even if expired
+            $cache_key = 'ylvp_video_data_upcoming';
+            $cached = get_transient($cache_key);
+            if ($cached !== false) {
+                return $cached;
+            }
+            return false;
+        }
+
         // First check for currently live streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=live&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
+        $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (!is_wp_error($response)) {
@@ -580,6 +708,7 @@ class YouTubeLatestVideoPlayer {
         // If no live stream, check for upcoming streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=upcoming&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
+        $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
@@ -616,6 +745,7 @@ class YouTubeLatestVideoPlayer {
     private function get_video_details($video_id, $api_key) {
         $api_url = "https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails,snippet,contentDetails&id=" . urlencode($video_id) . "&key=" . urlencode($api_key);
 
+        $this->track_api_call(1); // Videos.list calls cost 1 unit
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
@@ -629,9 +759,20 @@ class YouTubeLatestVideoPlayer {
     }
 
     private function fetch_latest_video_from_api($channel_id, $api_key) {
+        // Check rate limit
+        if (!$this->check_rate_limit()) {
+            $cache_key = 'ylvp_video_data_latest';
+            $cached = get_transient($cache_key);
+            if ($cached !== false) {
+                return $cached;
+            }
+            return false;
+        }
+
         // First check for recently completed live streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=completed&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
+        $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (!is_wp_error($response)) {
@@ -653,9 +794,10 @@ class YouTubeLatestVideoPlayer {
             }
         }
 
-        // Fallback to regular latest video search
-        $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&order=date&type=video&maxResults=5&key=" . urlencode($api_key);
+        // Fallback to regular latest video search (reduced to 2 videos to save quota)
+        $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&order=date&type=video&maxResults=2&key=" . urlencode($api_key);
 
+        $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
@@ -666,7 +808,7 @@ class YouTubeLatestVideoPlayer {
         $data = json_decode($body, true);
 
         if (isset($data['items']) && !empty($data['items'])) {
-            // Get the most recent video that's not a short
+            // Get the most recent video that's not a short (check max 2 videos)
             foreach ($data['items'] as $video) {
                 // Get video details to check duration (skip shorts)
                 $video_details = $this->get_video_details($video['id']['videoId'], $api_key);
@@ -755,11 +897,15 @@ class YouTubeLatestVideoPlayer {
         // Get current video ID if provided (to detect changes)
         $current_video_id = isset($_POST['current_video_id']) ? sanitize_text_field($_POST['current_video_id']) : '';
 
-        // Clear cache to force fresh check
-        delete_transient('ylvp_video_data_upcoming');
-        delete_transient('ylvp_video_data_latest');
+        // Only clear cache if explicitly requested or if we're close to an upcoming event
+        $force_refresh = isset($_POST['force_refresh']) ? (bool)$_POST['force_refresh'] : false;
 
-        // Get fresh video data
+        if ($force_refresh) {
+            delete_transient('ylvp_video_data_upcoming');
+            delete_transient('ylvp_video_data_latest');
+        }
+
+        // Get video data (will use cache if available and valid)
         $video_data = $this->get_video_data(true);
 
         if (!$video_data) {

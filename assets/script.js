@@ -258,7 +258,7 @@
         // Check video status immediately
         checkVideoStatus($container);
 
-        // Continue checking every 15 seconds
+        // Continue checking every 60 seconds (reduced from 15 to save API quota)
         var checkInterval = setInterval(function() {
             if ($container.is(':visible') && $container.hasClass('ylvp-upcoming')) {
                 checkVideoStatus($container);
@@ -266,7 +266,7 @@
                 // Stop checking if video is now live
                 clearInterval(checkInterval);
             }
-        }, 15000);
+        }, 60000);
     }
 
     /**
@@ -402,7 +402,7 @@
     function startLiveStreamMonitoring($container) {
         var videoId = $container.data('video-id');
 
-        // Check every 2 minutes while live
+        // Check every 10 minutes while live (reduced from 2 to save API quota)
         var monitorInterval = setInterval(function() {
             if (!$container.is(':visible')) {
                 clearInterval(monitorInterval);
@@ -425,14 +425,14 @@
                     clearInterval(monitorInterval);
                 }
             });
-        }, 120000); // Check every 2 minutes
+        }, 600000); // Check every 10 minutes
     }
 
     /**
      * Monitor a completed video to check for new upcoming sermons
      */
     function startCompletedVideoMonitoring($container) {
-        // Check every 5 minutes for new upcoming sermons
+        // Check every 30 minutes for new upcoming sermons (reduced from 5 to save API quota)
         var monitorInterval = setInterval(function() {
             if (!$container.is(':visible')) {
                 clearInterval(monitorInterval);
@@ -449,7 +449,7 @@
                     clearInterval(monitorInterval);
                 }
             });
-        }, 300000); // Check every 5 minutes
+        }, 1800000); // Check every 30 minutes
     }
 
     /**
