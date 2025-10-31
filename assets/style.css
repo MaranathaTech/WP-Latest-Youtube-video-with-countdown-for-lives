@@ -9,6 +9,42 @@
     overflow: hidden;
 }
 
+/* Responsive video wrapper - 16:9 aspect ratio */
+.ylvp-video-wrapper {
+    position: relative !important;
+    width: 100% !important;
+    height: 0 !important;
+    padding-bottom: 56.25% !important; /* 16:9 aspect ratio */
+    overflow: hidden !important;
+    background: #000;
+}
+
+.ylvp-video-wrapper iframe {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    border: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* Override conflicting YouTube lazy-load plugins (e.g., WP YouTube Lyte) */
+.ylvp-container .lyte-wrapper,
+.ylvp-video-wrapper .lyte-wrapper {
+    width: 80% !important;
+    max-width: 80% !important;
+    margin: 0 auto !important;
+}
+
+.ylvp-container iframe[src*="youtube.com"],
+.ylvp-container iframe[src*="youtu.be"] {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
 .ylvp-video-info {
     padding: 15px 20px;
     background: #f9f9f9;

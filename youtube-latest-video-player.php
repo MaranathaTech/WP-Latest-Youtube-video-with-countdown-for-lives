@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.4.0
+ * Version: 1.4.6
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.4.0');
+define('YLVP_VERSION', '1.4.6');
 
 class YouTubeLatestVideoPlayer {
 
@@ -25,7 +25,11 @@ class YouTubeLatestVideoPlayer {
         add_action('init', array($this, 'init'));
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'admin_init'));
+
+        // Load jQuery early with high priority to prevent script order issues
+        add_action('wp_enqueue_scripts', array($this, 'enqueue_jquery_early'), 1);
         add_action('wp_enqueue_scripts', array($this, 'enqueue_scripts'));
+
         add_shortcode('youtube_latest_video', array($this, 'shortcode_handler'));
 
         // AJAX handlers for checking video status
@@ -270,33 +274,26 @@ class YouTubeLatestVideoPlayer {
         <?php
     }
 
+    /**
+     * Force jQuery to load early with highest priority
+     * This fixes issues with themes/plugins that load jQuery Migrate before jQuery core
+     */
+    public function enqueue_jquery_early() {
+        wp_enqueue_script('jquery');
+    }
+
     public function enqueue_scripts() {
-        wp_enqueue_style('ylvp-style', YLVP_PLUGIN_URL . 'assets/style.css', array(), time()); // Force timestamp cache bust
-        wp_enqueue_script('ylvp-script', YLVP_PLUGIN_URL . 'assets/script.js', array('jquery'), YLVP_VERSION, true);
+        wp_enqueue_style('ylvp-style', YLVP_PLUGIN_URL . 'assets/style.css', array(), YLVP_VERSION);
+
+        // Load script in footer (false = header, true = footer)
+        // Changed to false to ensure jQuery loads properly before other scripts
+        wp_enqueue_script('ylvp-script', YLVP_PLUGIN_URL . 'assets/script.js', array('jquery'), YLVP_VERSION, false);
 
         // Localize script for AJAX
         wp_localize_script('ylvp-script', 'ylvp_ajax', array(
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('ylvp_check_video_status')
         ));
-
-        // Add isolation CSS to prevent conflicts
-        wp_add_inline_style('ylvp-style', '
-            .ylvp-isolated-container iframe[src*="youtube.com"] {
-                position: absolute !important;
-                top: 0 !important;
-                left: 0 !important;
-                width: 100% !important;
-                height: 100% !important;
-                border: none !important;
-                z-index: 1001 !important;
-            }
-            .ylvp-isolated-container {
-                position: relative !important;
-                z-index: 1000 !important;
-                isolation: isolate !important;
-            }
-        ');
     }
 
     public function shortcode_handler($atts) {
@@ -315,7 +312,7 @@ class YouTubeLatestVideoPlayer {
             delete_transient('ylvp_video_data_upcoming_lock');
             delete_transient('ylvp_video_data_latest_lock');
             $debug_messages = get_option('ylvp_debug_messages', array());
-            $debug_messages[] = "MANUALLY CLEARED ALL LOCKS via shortcode parameter";
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] MANUALLY CLEARED ALL LOCKS via shortcode parameter";
             update_option('ylvp_debug_messages', $debug_messages);
         }
 
@@ -326,6 +323,12 @@ class YouTubeLatestVideoPlayer {
             delete_transient('ylvp_video_data_upcoming_lock');
             delete_transient('ylvp_video_data_latest_lock');
             delete_transient('ylvp_api_error_state'); // Clear error state on manual refresh
+
+            // Clear debug message history to start fresh
+            delete_option('ylvp_debug_messages');
+            $debug_messages = array();
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] ⚡ MANUAL REFRESH: Cleared all caches, circuit breaker, and debug history";
+            update_option('ylvp_debug_messages', $debug_messages);
         }
 
         $video_data = $this->get_video_data($atts['show_upcoming']);
@@ -398,11 +401,10 @@ class YouTubeLatestVideoPlayer {
                 $output .= ' data-is-live="true" data-video-id="' . esc_attr($video_id) . '"';
             }
             $output .= '>';
-            $output .= '<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%; overflow: hidden;">';
+            $output .= '<div class="ylvp-video-wrapper">';
             $output .= '<iframe ';
             $output .= 'src="https://www.youtube.com/embed/' . esc_attr($video_id) . '?rel=0' . $autoplay . '" ';
             $output .= 'title="' . esc_attr($title) . '" ';
-            $output .= 'style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none;" ';
             $output .= 'frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" ';
             $output .= 'allowfullscreen></iframe>';
             $output .= '</div>';
@@ -460,10 +462,19 @@ class YouTubeLatestVideoPlayer {
                     $cached_video = false;
                 }
             } elseif (isset($cached_video['is_upcoming']) && $cached_video['is_upcoming']) {
-                // Upcoming events - cache for only 60 seconds when close to start time
+                // Upcoming events - check if scheduled time has passed
                 $scheduled_start = strtotime($cached_video['scheduled_start_time']);
-                $time_until_start = $scheduled_start - time();
-                if ($time_until_start < 300) { // Within 5 minutes of start
+                $current_time = time();
+                $time_until_start = $scheduled_start - $current_time;
+
+                // If scheduled time has passed by more than 5 minutes, clear the cache
+                if ($current_time > ($scheduled_start + 300)) {
+                    $debug_messages = get_option('ylvp_debug_messages', array());
+                    $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] STALE UPCOMING VIDEO DETECTED: scheduled time has passed, clearing cache";
+                    update_option('ylvp_debug_messages', $debug_messages);
+                    delete_transient($cache_key);
+                    $cached_video = false;
+                } elseif ($time_until_start < 300) { // Within 5 minutes of start
                     $cache_time = get_option('ylvp_upcoming_cache_time', time());
                     if (time() - $cache_time > 60) {
                         delete_transient($cache_key);
@@ -482,7 +493,7 @@ class YouTubeLatestVideoPlayer {
         $lock_status = get_transient($lock_key);
         if ($lock_status) {
             $debug_messages = get_option('ylvp_debug_messages', array());
-            $debug_messages[] = "LOCK DETECTED - another process is fetching. Waiting 500ms...";
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] LOCK DETECTED - another process is fetching. Waiting 500ms...";
             update_option('ylvp_debug_messages', $debug_messages);
 
             // Another request is already fetching, wait a moment
@@ -491,13 +502,13 @@ class YouTubeLatestVideoPlayer {
             // Check cache again - the other process may have completed
             $cached_video = get_transient($cache_key);
             if ($cached_video !== false) {
-                $debug_messages[] = "Lock wait successful - found cached data";
+                $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Lock wait successful - found cached data";
                 update_option('ylvp_debug_messages', $debug_messages);
                 return $cached_video;
             }
 
             // If still no cache, return false rather than making duplicate API call
-            $debug_messages[] = "Lock wait failed - no cached data available, returning false";
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Lock wait failed - no cached data available, returning false";
             update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
@@ -533,13 +544,18 @@ class YouTubeLatestVideoPlayer {
                 $scheduled_start = strtotime($video_data['scheduled_start_time']);
                 $current_time = time();
 
-                // If the scheduled time has passed by more than 5 minutes, clear cache and try again
+                // If the scheduled time has passed by more than 5 minutes, this is stale
+                // Don't use it - fall through to fetch latest completed video instead
                 if ($current_time > ($scheduled_start + 300)) {
+                    $debug_messages = get_option('ylvp_debug_messages', array());
+                    $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] POST-FETCH STALE DETECTION: Upcoming video is stale, will fetch latest completed instead";
+                    update_option('ylvp_debug_messages', $debug_messages);
+
                     delete_transient('ylvp_video_data_upcoming');
                     delete_transient('ylvp_video_data_latest');
 
-                    // Try again - this time it should find the live or completed video
-                    $video_data = $this->fetch_upcoming_video_from_api($channel_id, $api_key);
+                    // Set to false so we fall through to fetch latest completed video
+                    $video_data = false;
                 }
             }
         }
@@ -607,16 +623,16 @@ class YouTubeLatestVideoPlayer {
 
         // Try the new forHandle parameter first (for @handle format)
         $api_url = "https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=" . urlencode($handle) . "&key=" . urlencode($api_key);
-        $debug_messages[] = "Trying forHandle: " . $api_url;
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Trying forHandle: " . $api_url;
 
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
-            $debug_messages[] = "forHandle error: " . $response->get_error_message();
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] forHandle error: " . $response->get_error_message();
         } else {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
-            $debug_messages[] = "forHandle response: " . substr($body, 0, 200);
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] forHandle response: " . substr($body, 0, 200);
 
             if (isset($data['items'][0]['id'])) {
                 $channel_id = $data['items'][0]['id'];
@@ -629,16 +645,16 @@ class YouTubeLatestVideoPlayer {
 
         // Fallback to forUsername for older format
         $api_url = "https://www.googleapis.com/youtube/v3/channels?part=id&forUsername=" . urlencode($handle) . "&key=" . urlencode($api_key);
-        $debug_messages[] = "Trying forUsername: " . $api_url;
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Trying forUsername: " . $api_url;
 
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
-            $debug_messages[] = "forUsername error: " . $response->get_error_message();
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] forUsername error: " . $response->get_error_message();
         } else {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
-            $debug_messages[] = "forUsername response: " . substr($body, 0, 200);
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] forUsername response: " . substr($body, 0, 200);
 
             if (isset($data['items'][0]['id'])) {
                 $channel_id = $data['items'][0]['id'];
@@ -651,16 +667,16 @@ class YouTubeLatestVideoPlayer {
 
         // Final fallback - search for the channel
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=" . urlencode($handle) . "&key=" . urlencode($api_key);
-        $debug_messages[] = "Trying search: " . $api_url;
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Trying search: " . $api_url;
 
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
-            $debug_messages[] = "Search error: " . $response->get_error_message();
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Search error: " . $response->get_error_message();
         } else {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
-            $debug_messages[] = "Search response: " . substr($body, 0, 200);
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Search response: " . substr($body, 0, 200);
 
             if (isset($data['items'][0]['snippet']['channelId'])) {
                 $channel_id = $data['items'][0]['snippet']['channelId'];
@@ -729,7 +745,7 @@ class YouTubeLatestVideoPlayer {
         // Set error state for 1 hour by default
         set_transient('ylvp_api_error_state', $error_message, $duration);
         $debug_messages = get_option('ylvp_debug_messages', array());
-        $debug_messages[] = "API ERROR STATE ACTIVATED: " . $error_message . " (will retry in " . ($duration / 60) . " minutes)";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] API ERROR STATE ACTIVATED: " . $error_message . " (will retry in " . ($duration / 60) . " minutes)";
         update_option('ylvp_debug_messages', $debug_messages);
     }
 
@@ -760,14 +776,14 @@ class YouTubeLatestVideoPlayer {
         // FAILSAFE: Check if we're in API error state
         if ($this->check_api_error_state()) {
             $error_state = get_transient('ylvp_api_error_state');
-            $debug_messages[] = "FAILSAFE: Skipping API call due to error state: " . $error_state;
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] FAILSAFE: Skipping API call due to error state: " . $error_state;
             update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
 
         // Check rate limit before making API call
         if (!$this->check_rate_limit()) {
-            $debug_messages[] = "Rate limit exceeded - returning cached data or failing";
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Rate limit exceeded - returning cached data or failing";
             update_option('ylvp_debug_messages', $debug_messages);
             // Return cached data if available, even if expired
             $cache_key = 'ylvp_video_data_upcoming';
@@ -781,7 +797,7 @@ class YouTubeLatestVideoPlayer {
         // First check for currently live streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=live&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
-        $debug_messages[] = "Searching for live streams: " . substr($api_url, 0, 100) . "...";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Searching for live streams: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
@@ -789,7 +805,7 @@ class YouTubeLatestVideoPlayer {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
 
-            $debug_messages[] = "Live stream search response: " . substr($body, 0, 200);
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Live stream search response: " . substr($body, 0, 200);
             update_option('ylvp_debug_messages', $debug_messages);
 
             // FAILSAFE: Check for API errors
@@ -817,12 +833,12 @@ class YouTubeLatestVideoPlayer {
         // If no live stream, check for upcoming streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=upcoming&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
-        $debug_messages[] = "No live streams found, searching for upcoming: " . substr($api_url, 0, 100) . "...";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] No live streams found, searching for upcoming: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
-            $debug_messages[] = "Upcoming search error: " . $response->get_error_message();
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Upcoming search error: " . $response->get_error_message();
             update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
@@ -830,7 +846,7 @@ class YouTubeLatestVideoPlayer {
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
 
-        $debug_messages[] = "Upcoming search response: " . substr($body, 0, 200);
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Upcoming search response: " . substr($body, 0, 200);
         update_option('ylvp_debug_messages', $debug_messages);
 
         // FAILSAFE: Check for API errors
@@ -859,7 +875,7 @@ class YouTubeLatestVideoPlayer {
             }
         }
 
-        $debug_messages[] = "No upcoming videos found";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] No upcoming videos found";
         update_option('ylvp_debug_messages', $debug_messages);
         return false;
     }
@@ -886,14 +902,14 @@ class YouTubeLatestVideoPlayer {
         // FAILSAFE: Check if we're in API error state
         if ($this->check_api_error_state()) {
             $error_state = get_transient('ylvp_api_error_state');
-            $debug_messages[] = "FAILSAFE: Skipping API call due to error state: " . $error_state;
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] FAILSAFE: Skipping API call due to error state: " . $error_state;
             update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
 
         // Check rate limit
         if (!$this->check_rate_limit()) {
-            $debug_messages[] = "Rate limit exceeded for latest video search";
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Rate limit exceeded for latest video search";
             update_option('ylvp_debug_messages', $debug_messages);
             $cache_key = 'ylvp_video_data_latest';
             $cached = get_transient($cache_key);
@@ -906,7 +922,7 @@ class YouTubeLatestVideoPlayer {
         // First check for recently completed live streams
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&eventType=completed&type=video&order=date&maxResults=1&key=" . urlencode($api_key);
 
-        $debug_messages[] = "Searching for completed streams: " . substr($api_url, 0, 100) . "...";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Searching for completed streams: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
@@ -914,7 +930,7 @@ class YouTubeLatestVideoPlayer {
             $body = wp_remote_retrieve_body($response);
             $data = json_decode($body, true);
 
-            $debug_messages[] = "Completed stream search response: " . substr($body, 0, 200);
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Completed stream search response: " . substr($body, 0, 200);
             update_option('ylvp_debug_messages', $debug_messages);
 
             // FAILSAFE: Check for API errors
@@ -924,7 +940,7 @@ class YouTubeLatestVideoPlayer {
 
             if (isset($data['items'][0])) {
                 $video = $data['items'][0];
-                $debug_messages[] = "Found completed stream: " . $video['snippet']['title'];
+                $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Found completed stream: " . $video['snippet']['title'];
                 update_option('ylvp_debug_messages', $debug_messages);
                 return array(
                     'video_id' => $video['id']['videoId'],
@@ -942,12 +958,12 @@ class YouTubeLatestVideoPlayer {
         // Fallback to regular latest video search (reduced to 2 videos to save quota)
         $api_url = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=" . urlencode($channel_id) . "&order=date&type=video&maxResults=2&key=" . urlencode($api_key);
 
-        $debug_messages[] = "No completed streams, searching for any recent videos: " . substr($api_url, 0, 100) . "...";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] No completed streams, searching for any recent videos: " . substr($api_url, 0, 100) . "...";
         $this->track_api_call(100); // Search calls cost 100 units
         $response = wp_remote_get($api_url);
 
         if (is_wp_error($response)) {
-            $debug_messages[] = "Latest video search error: " . $response->get_error_message();
+            $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Latest video search error: " . $response->get_error_message();
             update_option('ylvp_debug_messages', $debug_messages);
             return false;
         }
@@ -955,7 +971,7 @@ class YouTubeLatestVideoPlayer {
         $body = wp_remote_retrieve_body($response);
         $data = json_decode($body, true);
 
-        $debug_messages[] = "Latest video search response: " . substr($body, 0, 200);
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] Latest video search response: " . substr($body, 0, 200);
         update_option('ylvp_debug_messages', $debug_messages);
 
         // FAILSAFE: Check for API errors
@@ -1007,7 +1023,7 @@ class YouTubeLatestVideoPlayer {
             );
         }
 
-        $debug_messages[] = "No videos found on channel";
+        $debug_messages[] = "[" . date('Y-m-d H:i:s') . "] No videos found on channel";
         update_option('ylvp_debug_messages', $debug_messages);
         return false;
     }
@@ -1126,11 +1142,10 @@ class YouTubeLatestVideoPlayer {
             ));
         } else {
             // Live or completed video - generate video player HTML
-            $html = '<div style="position: relative; width: 100%; height: 0; padding-bottom: 56.25%; overflow: hidden;">';
+            $html = '<div class="ylvp-video-wrapper">';
             $html .= '<iframe ';
             $html .= 'src="https://www.youtube.com/embed/' . esc_attr($video_id) . '?rel=0' . ($video_changed ? '' : '&autoplay=1') . '" ';
             $html .= 'title="' . esc_attr($title) . '" ';
-            $html .= 'style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none;" ';
             $html .= 'frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" ';
             $html .= 'allowfullscreen></iframe>';
             $html .= '</div>';
