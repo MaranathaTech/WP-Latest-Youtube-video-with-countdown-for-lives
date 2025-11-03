@@ -3,7 +3,7 @@
  * Plugin Name: YouTube Latest Video Player
  * Plugin URI: https://github.com/your-username/youtube-latest-video-player
  * Description: Allows users to enter their YouTube channel streams URL and displays a video player that dynamically loads the latest video.
- * Version: 1.4.6
+ * Version: 1.4.7
  * Author: Your Name
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 // Define plugin constants
 define('YLVP_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('YLVP_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('YLVP_VERSION', '1.4.6');
+define('YLVP_VERSION', '1.4.7');
 
 class YouTubeLatestVideoPlayer {
 
