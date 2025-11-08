@@ -3,7 +3,10 @@
     "allow": [
       "Read(//Users/ernielail/Desktop/**)",
       "WebFetch(domain:lail-tech.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git add assets/style.css youtube-latest-video-player.php)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nFix video background appearing purple on some devices\n\nChanged video background from pure black (#000) to dark grey (#1a1a1a) to prevent purple/blue tinting that occurs on OLED and some LED displays when rendering absolute black values.\n\nVersion bumped to 1.4.7\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push)"
     ],
     "deny": [],
     "ask": []
